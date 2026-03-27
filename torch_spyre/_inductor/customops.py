@@ -14,52 +14,9 @@
 
 from typing import Optional, Sequence
 import torch
-from torch_spyre.fallbacks import warn_fallback
+from torch_spyre.ops.fallbacks import warn_fallback
 
-from . import Unsupported
-
-
-@torch.library.custom_op("spyre::compact", mutates_args=())
-def compact(input: torch.Tensor) -> torch.Tensor:
-    if len(input.size()) != 1:
-        raise Unsupported("compact not implemented for 1-D tensors")
-    return input.clone()
-
-
-@compact.register_fake
-def _(input):
-    if len(input.size()) != 1:
-        raise Unsupported("compact only implemented for 1-D tensors")
-    return input.new_empty(input.size())
-
-
-@torch.library.custom_op("spyre::swap", mutates_args=(), device_types="spyre")
-def swap(input: torch.Tensor) -> torch.Tensor:
-    if len(input.size()) != 1:
-        raise Unsupported("swap only implemented for 1-D tensors")
-    return input.new_empty_strided(input.size(), [64])
-
-
-@swap.register_fake
-def _(input):
-    if len(input.size()) != 1:
-        raise Unsupported("swap only implemented for 1-D tensors")
-    return input.new_empty_strided(input.size(), [64])
-
-
-@torch.library.custom_op("spyre::slice", mutates_args=(), device_types="spyre")
-def slice(input: torch.Tensor) -> torch.Tensor:
-    if len(input.size()) != 1:
-        raise Unsupported("slice only implemented for 1-D tensors")
-    output = input.new_empty(input.size())
-    return output
-
-
-@slice.register_fake
-def _(input):
-    if len(input.size()) != 1:
-        raise Unsupported("slice only implemented for 1-D tensors")
-    return input.new_empty(input.size())
+from .errors import Unsupported
 
 
 @torch.library.custom_op("spyre::softplus", mutates_args=(), device_types="spyre")
@@ -142,6 +99,30 @@ def _(
     return x.new_empty(x.size())
 
 
+@torch.library.custom_op("spyre::rms_norm", mutates_args=())
+def rms_norm(
+    x: torch.Tensor,
+    normalized_shape: list[int],
+    weight: Optional[torch.Tensor] = None,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    if len(normalized_shape) != 1:
+        raise Unsupported(
+            f"spyre.layernorm: unsupported reduction shape {normalized_shape}"
+        )
+    return torch.compile(torch.ops.spyre.rms_norm)(x, normalized_shape, weight, eps)
+
+
+@rms_norm.register_fake
+def _(
+    x: torch.Tensor,
+    normalized_shape: list[int],
+    weight: Optional[torch.Tensor] = None,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    return x.new_empty(x.size())
+
+
 @torch.library.custom_op("spyre::gelu", mutates_args=(), device_types="spyre")
 def gelu(
     input: torch.Tensor,
@@ -194,3 +175,33 @@ def _(
     dtype: Optional[torch.dtype] = None,
 ):
     return torch.empty(size, dtype=dtype, device="spyre")
+
+
+@torch.library.custom_op("spyre::logical_not", mutates_args=(), device_types="spyre")
+def logical_not(input: torch.Tensor) -> torch.Tensor:
+    pass
+
+
+@logical_not.register_fake
+def _(input: torch.Tensor):
+    return input.new_empty(input.size())
+
+
+@torch.library.custom_op("spyre::ones_scalar", mutates_args=(), device_types="spyre")
+def spyre_ones_scalar(
+    device: torch.device,
+    dtype: Optional[torch.dtype] = None,
+) -> torch.Tensor:
+    """Return a 1-element tensor containing 1 on Spyre. Used for ones via identity broadcast."""
+    warn_fallback("torch.ops.spyre.ones_scalar")
+    out = torch.empty(1, dtype=dtype, device=device)
+    out.fill_(1)
+    return out
+
+
+@spyre_ones_scalar.register_fake
+def _ones_scalar_fake(
+    device: torch.device,
+    dtype: Optional[torch.dtype] = None,
+):
+    return torch.empty(1, dtype=dtype, device="spyre")

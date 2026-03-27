@@ -12,37 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 import torch
 
 from torch._inductor.choices import InductorChoices
-from torch._inductor.codegen.simd_kernel_features import SIMDKernelFeatures
 from torch._inductor.scheduler import BaseSchedulerNode, Scheduler
+
+from torch_spyre._inductor.logging_utils import _get_env_bool
+
+_FUSION_ENABLED = _get_env_bool("SPYRE_INDUCTOR_ENABLE_FUSION")
 
 
 class SpyreHeuristics(InductorChoices):
-    @staticmethod
-    def should_use_cooperative_reduction(features: SIMDKernelFeatures) -> bool:
-        """Heuristic to decide if a cooperative reduction should be used."""
-        return False
-
-    @staticmethod
-    def should_use_persistent_reduction(
-        features: SIMDKernelFeatures, cooperative_reduction: bool
-    ) -> bool:
-        """
-        Heuristic to decide if a persistent reduction should be used.
-        """
-        return True
-
-    @staticmethod
-    def want_no_x_dim(features: SIMDKernelFeatures) -> bool:
-        """
-        Heuristic to decide if we should drop the X dimension from a persistent reduction kernel.
-        So the [XBLOCK, RBLOCK] block becomes a [RBLOCK] block and XBLOCK is forced to be always 1.
-        Strangely this is faster than a [1, RBLOCK] block in some cases.
-        """
-        return False
-
     @staticmethod
     def reduction_split_factor(
         device: torch.device,
@@ -62,7 +43,7 @@ class SpyreHeuristics(InductorChoices):
         node2: BaseSchedulerNode,
         shared_data_score: int,
     ) -> bool:
-        return False
+        return _FUSION_ENABLED
 
     @staticmethod
     def can_fuse_vertical(
@@ -71,7 +52,7 @@ class SpyreHeuristics(InductorChoices):
         node2: BaseSchedulerNode,
         shared_data_score: int,
     ) -> bool:
-        return False
+        return _FUSION_ENABLED
 
     @staticmethod
     def can_fuse_horizontal(
@@ -80,4 +61,4 @@ class SpyreHeuristics(InductorChoices):
         node2: BaseSchedulerNode,
         shared_data_score: int,
     ) -> bool:
-        return False
+        return _FUSION_ENABLED

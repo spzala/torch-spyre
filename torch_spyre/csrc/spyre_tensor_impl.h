@@ -20,6 +20,7 @@
 #include <c10/util/intrusive_ptr.h>
 #include <util/sendefs.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@
 namespace spyre {
 
 int64_t elems_per_stick(const DataFormats& df);
+std::vector<int32_t> generic_stick_dim_order(int32_t num_dims);
 
 class SpyreTensorLayout {
  public:
@@ -44,7 +46,15 @@ class SpyreTensorLayout {
    * vector. Stick dimensions will appear twice; non-stick dimensions will
    * appear once.
    */
+  [[deprecated("Use stride_map instead.")]]
   std::vector<int32_t> dim_map;
+
+  /**
+   * Record the mapping from device dimensions to host strides.
+   * It has len(device_size) entries whose values are offsets in the host tensor
+   * memory.
+   */
+  std::vector<int64_t> stride_map;
 
   DataFormats device_dtype;
 
@@ -61,14 +71,15 @@ class SpyreTensorLayout {
   }
 
   /**
-   * Construct a SpyreTensorLayout for the argument host_size
+   * Construct a SpyreTensorLayout for the argument host_size and host_strides
    * with the given order of dimensions in decreasing stride order
    * using the default device memory layout.
    * See docs/SpyreTensors.md for a precise definition of this layout.
    */
-  SpyreTensorLayout(std::vector<int64_t> host_size, c10::ScalarType dtype,
+  SpyreTensorLayout(std::vector<int64_t> host_size,
+                    std::vector<int64_t> host_strides, c10::ScalarType dtype,
                     std::vector<int32_t> dim_order) {
-    init(host_size, dtype, dim_order);
+    init(host_size, host_strides, dtype, dim_order);
   }
 
   /**
@@ -79,30 +90,25 @@ class SpyreTensorLayout {
    * that all device layout invariants are satisfied.
    */
   SpyreTensorLayout(std::vector<int64_t> device_size,
-                    std::vector<int32_t> dim_map, DataFormats device_dtype)
+                    std::vector<int32_t> dim_map,
+                    std::vector<int64_t> stride_map, DataFormats device_dtype)
       : device_size(device_size),
         dim_map(dim_map),
+        stride_map(stride_map),
         device_dtype(device_dtype) {}
 
   void init(std::vector<int64_t> host_size, c10::ScalarType dtype);
 
-  void init(std::vector<int64_t> host_size, c10::ScalarType dtype,
-            std::vector<int32_t> dim_order);
+  void init(std::vector<int64_t> host_size, std::vector<int64_t> host_strides,
+            c10::ScalarType dtype, std::vector<int32_t> dim_order);
 
   std::string toString() const;
 
   /**
-   * Return the host_dim that is considered to be the stick dimension.
+   * Return the host_dim that is the stick dimension; sparse tensors return
+   * nullopt.
    */
-  int32_t host_stick_dim();
-
-  /**
-   * Return a dim_order of the desired rank that is as similar as
-   * possible to the dim_order encoded in this->dim_map.
-   * Because of the elision of size 1 dimensions, there will not always
-   * be a unique "most similar" dim_order, so heuristics may be applied.
-   */
-  std::vector<int32_t> similar_dim_order(int32_t desired_rank);
+  std::optional<int32_t> host_stick_dim();
 
   int64_t elems_per_stick() {
     return spyre::elems_per_stick(this->device_dtype);
@@ -111,6 +117,7 @@ class SpyreTensorLayout {
   bool operator==(const SpyreTensorLayout& other) const {
     return this->device_size == other.device_size &&
            this->dim_map == other.dim_map &&
+           this->stride_map == other.stride_map &&
            this->device_dtype == other.device_dtype;
   }
 };
@@ -125,6 +132,8 @@ class SpyreTensorImpl : public at::TensorImpl {
   ~SpyreTensorImpl() = default;
 
   SpyreTensorLayout spyre_layout;
+  std::vector<int64_t> dma_sizes;
+  std::vector<int64_t> dma_strides;
 
   SpyreTensorImpl(c10::Storage&& storage, c10::DispatchKeySet key_set,
                   const caffe2::TypeMeta& dtype);

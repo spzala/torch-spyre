@@ -14,15 +14,16 @@
 
 from typing import NamedTuple
 
-from sympy import Expr, Symbol
 
-from torch._inductor.ir import FixedLayout
+import sympy
+from torch._inductor.ir import FixedLayout, Pointwise, Reduction
 from torch._inductor.scheduler import SchedulerNode
 from torch._inductor.dependencies import MemoryDep
-from torch._inductor.utils import sympy_subs
 from torch._inductor.virtualized import V
+from torch_spyre._inductor.errors import Unsupported
 
 from .ir import FixedTiledLayout
+from .views import compute_coordinates
 
 
 class SchedNodeArg(NamedTuple):
@@ -42,18 +43,25 @@ def get_mem_deps(n: SchedulerNode) -> list[SchedNodeArg]:
     return res
 
 
-def map_dims_to_vars(layout: FixedLayout, index: Expr) -> dict[int, Symbol]:
-    """
-    Construct a mapping from the dimensions of layout
-    to the free variables of index that correspond to them.
+def host_coordinates(layout: FixedLayout, dep: MemoryDep) -> list[sympy.Expr]:
+    return compute_coordinates(layout.size, layout.stride, dep.ranges, dep.index)
 
-    This works by reversing the algorithm used by torch._inductor.ir. _fixed_indexer to build index.
-    """
-    result = {}
-    for sym in index.free_symbols:
-        stride_val = sympy_subs(index, {sym: 1}) - sympy_subs(index, {sym: 0})
-        if stride_val in layout.stride:
-            idx = layout.stride.index(stride_val)
-            result[idx] = sym
 
-    return result
+def device_coordinates(layout: FixedTiledLayout, dep: MemoryDep) -> list[sympy.Expr]:
+    return compute_coordinates(
+        layout.device_layout.device_size,
+        layout.device_layout.stride_map,
+        dep.ranges,
+        dep.index,
+    )
+
+
+def iteration_space(n: SchedulerNode) -> dict[sympy.Symbol, sympy.Expr]:
+    if isinstance(n.node.data, Pointwise):
+        # The iteration space of a Pointwise is that of its output
+        return next(iter(n.read_writes.writes)).ranges.copy()
+    elif isinstance(n.node.data, Reduction):
+        # The iteration space of a Reduction is that of its input
+        return next(iter(n.read_writes.reads)).ranges.copy()
+    else:
+        raise Unsupported("Unexpected node type")

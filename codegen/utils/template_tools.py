@@ -37,8 +37,10 @@ def extract_scalar_arg_names(schema_string: str) -> List[str]:
     # Pattern: Scalar (optionally ?) followed by whitespace and name
     pattern = r"Scalar\??[\s]+([a-zA-Z_][a-zA-Z0-9_]*)"
     all_scalar_names = re.findall(pattern, args_str)
-    # Filter out alpha and beta
-    return [name for name in all_scalar_names if name not in ["alpha", "beta"]]
+    # Filter out alpha, beta, and exponent to allow upstream decompositions
+    return [
+        name for name in all_scalar_names if name not in ["alpha", "beta", "exponent"]
+    ]
 
 
 def get_args_with_default_vals(schema_string):
@@ -72,7 +74,7 @@ def get_args_with_default_vals(schema_string):
 
     """
     # Extract everything inside parentheses
-    inside = re.search(r"\((.*)\)", schema_string).group(1)
+    inside = re.search(r"\((.*?)\)\s*->", schema_string).group(1)
     # Split by comma and clean spacing
     parts = [p.strip() for p in inside.split(",")]
     # Find the index of "*"
@@ -166,7 +168,7 @@ def convert_cpp_type_to_python(cpp_type):
         "int64_t": "int",
         "double": "float",
         "bool": "bool",
-        "Scalar": "Union[int, float, bool, complex]",
+        "Scalar": "int | float | bool | complex",
         "IntArrayRef": "list[int]",
         "c10::string_view": "str",
         "DimnameList": "list[str]",

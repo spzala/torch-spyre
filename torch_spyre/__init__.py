@@ -40,6 +40,8 @@ class _SpyreImpl:
             pass
 
     def __getattr__(self, name):
+        if name == "_C":
+            return self.__dict__.get(name, None)
         self._lazy_init()
         return super().__getattribute__(name)
 
@@ -65,6 +67,18 @@ class _SpyreImpl:
 
             ts_autoload()
 
+            # Permanently register PrivateUse1 kernels for DispatchKeys
+            # so that eager-mode dispatch reaches the Spyre implementations
+            # without requiring global monkey-patching.
+            # Customops must be imported here because decompositions.py references
+            # torch.ops.spyre.* at module level (e.g. torch.ops.spyre.rms_norm).
+            import torch_spyre._inductor.customops  # noqa: F401
+            from torch_spyre._inductor.decompositions import (
+                _register_spyre_dispatchkey_kernels_permanently,
+            )
+
+            _register_spyre_dispatchkey_kernels_permanently()
+
     def _is_in_bad_fork(self) -> bool:
         return self._in_bad_fork
 
@@ -86,7 +100,9 @@ class _SpyreImpl:
         if self._is_in_bad_fork():
             return True
         else:
-            return getattr(self._C, "is_available", lambda: True)()
+            return not hasattr(self, "_C") or (
+                self._C is not None and getattr(self._C, "is_available", lambda: True)()
+            )
 
     def is_initialized(self):
         return self._initialized and not self._is_in_bad_fork()
@@ -117,19 +133,19 @@ def make_spyre_module() -> types.ModuleType:
 
     # Expose bound methods directly — they look like plain functions on the module.
     # These are *bound* to `impl`, so `self` is already captured.
-    mod._is_in_bad_fork = impl._is_in_bad_fork
-    mod.manual_seed = impl.manual_seed
-    mod.manual_seed_all = impl.manual_seed_all
-    mod.is_available = impl.is_available
-    mod.is_initialized = impl.is_initialized
-    mod.device_count = impl.device_count
-    mod.current_device = impl.current_device
-    mod.set_device = impl.set_device
+    mod._is_in_bad_fork = lambda: impl._is_in_bad_fork()
+    mod.manual_seed = lambda s: impl.manual_seed(s)
+    mod.manual_seed_all = lambda s: impl.manual_seed_all(s)
+    mod.is_available = lambda: impl.is_available()
+    mod.is_initialized = lambda: impl.is_initialized()
+    mod.device_count = lambda: impl.device_count()
+    mod.current_device = lambda: impl.current_device()
+    mod.set_device = lambda idx: impl.set_device(idx)
     mod._is_compiled = lambda: True
 
     # Optional: forward unknown attrs to the impl or _C for convenience
     def __getattr__(name):
-        if name in ["__file__"]:
+        if name in ["__file__", "_C"]:
             # Important: raising AttributeError ensures hasattr() returns False
             # without triggering our lazy loader.
             raise AttributeError(name)
@@ -137,11 +153,44 @@ def make_spyre_module() -> types.ModuleType:
             return getattr(impl, name)
         if not hasattr(impl, "_C"):
             impl._lazy_init()
+        if name in {
+            "Stream",
+            "stream",
+            "current_stream",
+            "default_stream",
+            "synchronize",
+        }:
+            impl._lazy_init()
+            from torch_spyre.streams import (
+                Stream,
+                stream,
+                current_stream,
+                default_stream,
+                synchronize,
+            )
+
+            streams_map = {
+                "Stream": Stream,
+                "stream": stream,
+                "current_stream": current_stream,
+                "default_stream": default_stream,
+                "synchronize": synchronize,
+            }
+            return streams_map[name]
         if hasattr(impl._C, name):
             return getattr(impl._C, name)
         raise AttributeError(name)
 
     mod.__getattr__ = __getattr__
+    _OPTIONAL_HOOKS = {
+        "Scheduling",
+        "GraphLowering",
+        "Lowering",
+        "Codegen",
+        "Compile",
+    }
+    for _name in _OPTIONAL_HOOKS:
+        setattr(mod, _name, None)
 
     # Keep a hidden handle to the impl (handy for tests/debugging)
     mod._impl = impl
@@ -161,8 +210,10 @@ def _autoload():
     # Set all the appropriate state on PyTorch
     torch.utils.rename_privateuse1_backend(DEVICE_NAME)
     torch._register_device_module(DEVICE_NAME, make_spyre_module())
-    import torch_spyre.codegen_ops
-    import torch_spyre._inductor.preload  # noqa: F401
+    import torch_spyre.codegen_ops  # noqa: F401
+    from torch_spyre._inductor import _light_autoload
+
+    _light_autoload()
 
     # Set correct state for dynamo to support eager ops
     import torch._dynamo.config
